@@ -10,9 +10,6 @@
 @import Cocoa;
 @import OSLog;
 
-//#import "procInfo.h"
-
-
 #import "ParentsWindowController.h"
 #import "VirusTotalViewController.h"
 #import "SigningInfoViewController.h"
@@ -29,8 +26,6 @@
 
 //reply
 @property (nonatomic, copy)void(^reply)(NSDictionary*);
-
-//(void (^)(NSDictionary*))reply;
 
 
 /* TOP */
@@ -87,6 +82,9 @@
 //port/protocol
 @property (weak) IBOutlet NSTextField *portProto;
 
+//reverse dns name
+@property (weak) IBOutlet NSTextField *reverseDNS;
+
 //ancestry view
 @property (strong) IBOutlet NSView *ancestryView;
 
@@ -105,14 +103,7 @@
 //check box for temp rule
 @property (weak) IBOutlet NSButton *tempRule;
 
-//flag for temp rule
-//@property BOOL isTempRule;
-
 /* METHODS */
-
-//build an array of processes ancestry
-// start with process and go 'back' till initial ancestor
-//-(void)generateProcessAncestry:(pid_t)pid;
 
 //automatically invoked when user clicks process ancestry button
 // ->depending on state, show/populate the popup, or close it

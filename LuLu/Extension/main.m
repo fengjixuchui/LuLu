@@ -42,7 +42,7 @@ int main(int argc, char *argv[])
     
     //alloc/init/load prefs
     preferences = [[Preferences alloc] init];
-    
+        
     //alloc/init alerts object
     alerts = [[Alerts alloc] init];
     

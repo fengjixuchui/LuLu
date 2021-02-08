@@ -128,6 +128,10 @@ enum Signer{None, Apple, AppStore, DevID, AdHoc};
 #define PREF_PASSIVE_MODE @"passiveMode"
 
 //prefs
+// block mode
+#define PREF_BLOCK_MODE @"blockMode"
+
+//prefs
 // icon mode
 #define PREF_NO_ICON_MODE @"noIconMode"
 
@@ -140,6 +144,12 @@ enum Signer{None, Apple, AppStore, DevID, AdHoc};
 
 //allow all installed
 #define PREF_ALLOW_INSTALLED @"allowInstalled"
+
+//use global block list
+#define PREF_USE_BLOCK_LIST @"useBlockList"
+
+//global block list
+#define PREF_BLOCK_LIST @"blockList"
 
 //install time
 // not really a 'pref' but need to save it

@@ -19,6 +19,7 @@
 @import CommonCrypto;
 @import SystemConfiguration;
 
+#import <netdb.h>
 #import <dlfcn.h>
 #import <signal.h>
 #import <unistd.h>
@@ -56,7 +57,7 @@ NSString* getAppBinary(NSString* appPath)
     if(nil == appBundle)
     {
         //err msg
-        os_log_error(logHandle, "failed to load app bundle for %{public}@", appPath);
+        os_log_error(logHandle, "ERROR: failed to load app bundle for %{public}@", appPath);
         
         //bail
         goto bail;
@@ -686,8 +687,14 @@ BOOL toggleLoginItem(NSURL* loginItem, int toggleFlag)
     //flag
     BOOL wasToggled = NO;
     
-    //login item ref
+    //status
+    OSStatus status = !noErr;
+    
+    //login items ref
     LSSharedFileListRef loginItemsRef = NULL;
+    
+    //login item ref
+    LSSharedFileListItemRef loginItemRef = NULL;
     
     //login items
     CFArrayRef loginItems = NULL;
@@ -705,19 +712,15 @@ BOOL toggleLoginItem(NSURL* loginItem, int toggleFlag)
         os_log_debug(logHandle, "adding login item: %{public}@", loginItem.path);
         
         //add
-        LSSharedFileListItemRef itemRef = LSSharedFileListInsertItemURL(loginItemsRef, kLSSharedFileListItemLast, NULL, NULL, (__bridge CFURLRef)(loginItem), NULL, NULL);
-        
-        //release item ref
-        if(NULL != itemRef)
+        loginItemRef = LSSharedFileListInsertItemURL(loginItemsRef, kLSSharedFileListItemLast, NULL, NULL, (__bridge CFURLRef)(loginItem), NULL, NULL);
+        if(NULL != loginItemRef)
         {
             //dbg msg
-            os_log_debug(logHandle, "added %{public}@/%{public}@", loginItem, itemRef);
+            os_log_debug(logHandle, "login item added");
             
             //release
-            CFRelease(itemRef);
-            
-            //reset
-            itemRef = NULL;
+            CFRelease(loginItemRef);
+            loginItemRef = NULL;
         }
         //failed
         else
@@ -736,9 +739,9 @@ BOOL toggleLoginItem(NSURL* loginItem, int toggleFlag)
     else
     {
         //dbg msg
-        os_log_debug(logHandle, "removing login item, %{public}@", loginItem.path);
+        os_log_debug(logHandle, "removing login item: %{public}@", loginItem.path);
         
-        //grab existing login items
+        //grab all login items
         loginItems = LSSharedFileListCopySnapshot(loginItemsRef, nil);
         
         //iterate over all login items
@@ -747,18 +750,21 @@ BOOL toggleLoginItem(NSURL* loginItem, int toggleFlag)
         {
             //get current login item
             currentLoginItem = LSSharedFileListItemCopyResolvedURL((__bridge LSSharedFileListItemRef)item, 0, NULL);
-            if(NULL == currentLoginItem)
-            {
-                //skip
-                continue;
-            }
+            if(NULL == currentLoginItem) continue;
             
             //current login item match self?
             if(YES == [(__bridge NSURL *)currentLoginItem isEqual:loginItem])
             {
+                //dbg msg
+                os_log_debug(logHandle, "found match");
+                
                 //remove
-                if(noErr == LSSharedFileListItemRemove(loginItemsRef, (__bridge LSSharedFileListItemRef)item))
+                if(noErr == (status = LSSharedFileListItemRemove(loginItemsRef, (__bridge LSSharedFileListItemRef)item)))
                 {
+                    //nap
+                    // give some time for event to complete
+                    [NSThread sleepForTimeInterval:1.0f];
+                    
                     //dbg msg
                     os_log_debug(logHandle, "removed login item");
                     
@@ -768,7 +774,7 @@ BOOL toggleLoginItem(NSURL* loginItem, int toggleFlag)
                 else
                 {
                     //err msg
-                    os_log_error(logHandle, "ERROR: failed to remove login item");
+                    os_log_error(logHandle, "ERROR: failed to remove login item (%x)", status);
                     
                     //keep trying though
                     // as might be multiple instances...
@@ -777,8 +783,6 @@ BOOL toggleLoginItem(NSURL* loginItem, int toggleFlag)
             
             //release
             CFRelease(currentLoginItem);
-            
-            //reset
             currentLoginItem = NULL;
             
         }//all login items
@@ -792,8 +796,6 @@ bail:
     {
         //release
         CFRelease(loginItems);
-        
-        //reset
         loginItems = NULL;
     }
     
@@ -802,8 +804,6 @@ bail:
     {
         //release
         CFRelease(loginItemsRef);
-        
-        //reset
         loginItemsRef = NULL;
     }
     
@@ -1117,4 +1117,102 @@ bail:
     }
 
     return token;
+}
+
+//given an ip address
+// reverse resolves it
+NSArray* resolveAddress(NSString* ipAddr)
+{
+    //hints
+    struct addrinfo hints = {0};
+    
+    //result
+    struct addrinfo *result = NULL;
+    
+    //address
+    CFDataRef address = {0};
+    
+    //host
+    CFHostRef host = NULL;
+    
+    //error
+    CFStreamError streamError = {0};
+    
+    //(resolved) host names
+    NSArray* hostNames = nil;
+    
+    //dbg msg
+    os_log_debug(logHandle, "(attempting to) reverse resolve %{public}@", ipAddr);
+    
+    //clear hints
+    memset(&hints, 0x0, sizeof(hints));
+    
+    //init flags
+    hints.ai_flags = AI_NUMERICHOST;
+    
+    //init family
+    hints.ai_family = PF_UNSPEC;
+    
+    //init type
+    hints.ai_socktype = SOCK_STREAM;
+    
+    //init proto
+    hints.ai_protocol = 0;
+    
+    //get addr info
+    if(0 != getaddrinfo(ipAddr.UTF8String, NULL, &hints, &result))
+    {
+        goto bail;
+    }
+    
+    //convert to data
+    address = CFDataCreate(NULL, (UInt8 *)result->ai_addr, result->ai_addrlen);
+    if(NULL == address)
+    {
+        goto bail;
+    }
+    
+    //create host
+    host = CFHostCreateWithAddress(kCFAllocatorDefault, address);
+    if(host == nil)
+    {
+        goto bail;
+    }
+    
+    //resolve
+    if(YES != CFHostStartInfoResolution(host, kCFHostNames, &streamError))
+    {
+        goto bail;
+    }
+    
+    //capture
+    hostNames = (__bridge NSArray *)(CFHostGetNames(host, NULL));
+    
+bail:
+    
+    //free address
+    if(NULL != address)
+    {
+        //free
+        CFRelease(address);
+        address = NULL;
+    }
+    
+    //free host
+    if(NULL != host)
+    {
+        //free
+        CFRelease(host);
+        host = NULL;
+    }
+    
+    //free result
+    if(NULL != result)
+    {
+        //free
+        freeaddrinfo(result);
+        result = NULL;
+    }
+    
+    return hostNames;
 }

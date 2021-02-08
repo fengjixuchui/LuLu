@@ -56,7 +56,7 @@ extern os_log_t logHandle;
     if(nil == request)
     {
         //err msg
-        os_log_error(logHandle, "failed to create request for extension");
+        os_log_error(logHandle, "ERROR: failed to create request for extension");
         
         //bail
         goto bail;
@@ -303,7 +303,7 @@ bail:
         if(YES != [((AppDelegate*)[[NSApplication sharedApplication] delegate]) isFirstTime])
         {
             //show alert
-            [((AppDelegate*)[[NSApplication sharedApplication] delegate]) noExtensionAlert];
+            showAlert(@"LuLu's Network Extension Is Not Running", @"Extensions must be manually approved via\r\nSecurity & Privacy System Preferences.");
         }
     });
     

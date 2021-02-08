@@ -61,10 +61,6 @@ extern os_log_t logHandle;
 // get rules and listen for new ones
 -(void)windowDidLoad
 {
-    //filtering?
-    // only generate events end events
-    self.filterBox.sendsWholeSearchString = YES;
-    
     //set indentation level for outline view
     self.outlineView.indentationPerLevel = 42;
     
@@ -355,7 +351,7 @@ bail:
 }
 
 //double-click handler
-// if it's an (editable) rule, bring up add/edit box
+// bring up add/edit box
 -(void)doubleClickHandler:(id)object
 {
     //clicked row
@@ -377,7 +373,7 @@ bail:
     os_log_debug(logHandle, "row: %ld, item: %{public}@", (long)row, item);
     
     //item row?
-    // show paths
+    // ...show paths
     if(YES == [item isKindOfClass:[NSArray class]])
     {
         //show paths
@@ -385,10 +381,22 @@ bail:
     }
     
     //rule row
-    // ...only allowed editable ones
-    else if( (YES == [item isKindOfClass:[Rule class]]) &&
-             (RULE_TYPE_DEFAULT != ((Rule*)item).type.intValue) )
+    // ...edit!
+    else if(YES == [item isKindOfClass:[Rule class]])
     {
+        //default rule?
+        //show alert/warning
+        if(RULE_TYPE_DEFAULT == ((Rule*)item).type.intValue)
+        {
+            //show alert
+            // ...and bail if user cancels
+            if(NSModalResponseCancel == [self showDefaultRuleAlert:item action:@"Editing"])
+            {
+                //bail
+                goto bail;
+            }
+        }
+        
         //add (edit) rule
         [self addRule:item];
     }
@@ -397,6 +405,42 @@ bail:
     
     return;
 
+}
+
+//warn user the modifying default rules might break things
+-(NSModalResponse)showDefaultRuleAlert:(Rule*)rule action:(NSString*)action
+{
+    //alert
+    NSAlert* alert = nil;
+    
+    //response
+    NSModalResponse response = 0;
+    
+    //init alert
+    alert = [[NSAlert alloc] init];
+    
+    //set style
+    alert.alertStyle = NSAlertStyleWarning;
+    
+    //main text
+    alert.messageText = [NSString stringWithFormat:@"%@ is legitimate macOS process", rule.name];
+    
+    //details
+    alert.informativeText = [NSString stringWithFormat:@"%@ this rule, may impact legitimate system functionalty ...continue?", action];;
+    
+    //add button
+    [alert addButtonWithTitle:@"Continue"];
+    
+    //add button
+    [alert addButtonWithTitle:@"Cancel"];
+    
+    //make app active
+    [NSApp activateIgnoringOtherApps:YES];
+    
+    //show
+    response = [alert runModal];
+    
+    return response;
 }
 
 //show paths in sheet
@@ -435,13 +479,26 @@ bail:
     //invoked with existing rule (to edit)
     if(YES == [sender isKindOfClass:[Rule class]])
     {
+        //default rule?
+        //show alert/warning
+        if(RULE_TYPE_DEFAULT == ((Rule*)sender).type.intValue)
+        {
+            //show alert
+            // ...and bail if user cancels
+            if(NSModalResponseCancel == [self showDefaultRuleAlert:sender action:@"Editing"])
+            {
+                //bail
+                goto bail;
+            }
+        }
+        
         //set rule
         self.addRuleWindowController.rule = (Rule*)sender;
     }
     
     //show it
     // on close/OK, invoke XPC to add rule, then reload
-    [self.window beginSheet:self.addRuleWindowController.window completionHandler:^(NSModalResponse returnCode) {
+    {[self.window beginSheet:self.addRuleWindowController.window completionHandler:^(NSModalResponse returnCode) {
         
         //(existing) rule
         Rule* rule = nil;
@@ -483,7 +540,9 @@ bail:
         //unset add rule window controller
         self.addRuleWindowController = nil;
         
-    }];
+    }];}
+    
+bail:
     
     return;
 }
@@ -731,9 +790,12 @@ bail:
         cell = [self.outlineView makeViewWithIdentifier:@"ruleCell" owner:self];
         if(nil == cell) goto bail;
         
-        //only add rule for connection (i.e. not root item)
+        //only add rule for connection (i.e. not item)
         if(YES == [item isKindOfClass:[Rule class]])
         {
+            //action
+            NSString* action = nil;
+            
             //typecast
             rule = (Rule*)item;
             
@@ -743,8 +805,8 @@ bail:
                 //set image
                 cell.imageView.image = [NSImage imageNamed:@"MainAppRulesBlock"];
                 
-                //set text
-                cell.textField.stringValue = @"block";
+                //set action text
+                action = (nil == rule.pid) ? @"block" : [NSString stringWithFormat:@"block (pid: %@)", rule.pid];
             }
             //allow?
             else
@@ -752,9 +814,13 @@ bail:
                 //set image
                 cell.imageView.image = [NSImage imageNamed:@"MainAppRulesAllow"];
                 
-                //set text
-                cell.textField.stringValue = @"allow";
+                //set action text
+                action = (nil == rule.pid) ? @"allow" : [NSString stringWithFormat:@"allow (pid: %@)", rule.pid];
             }
+            
+            //set text
+            cell.textField.stringValue = action;
+            
         }
         //otherwise unset image/text
         else
@@ -769,20 +835,8 @@ bail:
             cell.textField.stringValue = @"";
         }
         
-        //disable button delete button if rule is a default (system) rule
-        if(RULE_TYPE_DEFAULT == rule.type.intValue)
-        {
-            //disable
-            [(NSButton*)[cell viewWithTag:TABLE_ROW_DELETE_TAG] setEnabled:NO];
-        }
-        
-        //otherwise
-        // enable delete button
-        else
-        {
-            //enable
-            [(NSButton*)[cell viewWithTag:TABLE_ROW_DELETE_TAG] setEnabled:YES];
-        }
+        //enable
+        [(NSButton*)[cell viewWithTag:TABLE_ROW_DELETE_TAG] setEnabled:YES];
     }
     
 bail:
@@ -914,12 +968,15 @@ bail:
     //index of row
     // either clicked or selected row
     NSInteger row = 0;
-    
+
     //item
     id item = nil;
     
     //rule
     Rule* rule = nil;
+    
+    //rule uuid
+    NSString* uuid = nil;
     
     //dbg msg
     os_log_debug(logHandle, "deleting rule...");
@@ -956,11 +1013,27 @@ bail:
     {
         //typecast
         rule = (Rule*)item;
+        
+        //set uuid
+        uuid = rule.uuid;
+    }
+    
+    //default rule?
+    // show alert/warning
+    if(RULE_TYPE_DEFAULT == rule.type.intValue)
+    {
+        //show alert
+        // ...and bail if user cancels
+        if(NSModalResponseCancel == [self showDefaultRuleAlert:rule action:@"Deleting"])
+        {
+            //bail
+            goto bail;
+        }
     }
     
     //remove rule via XPC
     // nil uuid, means delete all rules for item (process)
-    [((AppDelegate*)[[NSApplication sharedApplication] delegate]).xpcDaemonClient deleteRule:rule.key rule:rule.uuid];
+    [((AppDelegate*)[[NSApplication sharedApplication] delegate]).xpcDaemonClient deleteRule:rule.key rule:uuid];
     
     //(re)load rules
     [self loadRules];
@@ -1086,6 +1159,17 @@ bail:
     }
     
 bail:
+    
+    return;
+}
+
+
+//button handler
+// open LuLu home page/docs
+-(IBAction)openHomePage:(id)sender {
+    
+    //open
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:PRODUCT_URL]];
     
     return;
 }

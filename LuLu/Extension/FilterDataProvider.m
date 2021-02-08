@@ -11,6 +11,7 @@
 #import "Alerts.h"
 #import "consts.h"
 #import "GrayList.h"
+#import "BlockList.h"
 #import "utilities.h"
 #import "Preferences.h"
 #import "XPCUserProto.h"
@@ -29,6 +30,9 @@ extern Rules* rules;
 
 //preferences
 extern Preferences* preferences;
+
+//block list
+extern BlockList* blockList;
 
 @implementation FilterDataProvider
 
@@ -90,7 +94,9 @@ extern Preferences* preferences;
         //error?
         if(nil != error) os_log_error(logHandle, "ERROR: failed to apply filter settings: %@", error.localizedDescription);
         
+        //call completion handler
         completionHandler(error);
+        
     }];
     
     return;
@@ -131,8 +137,11 @@ extern Preferences* preferences;
     //verdict
     NEFilterNewFlowVerdict* verdict = nil;
     
+    //token
+    static dispatch_once_t onceToken = 0;
+    
     //log msg
-    os_log_debug(logHandle, "%s", __PRETTY_FUNCTION__);
+    os_log_debug(logHandle, "method '%s' invoked", __PRETTY_FUNCTION__);
     
     //init verdict to allow
     verdict = [NEFilterNewFlowVerdict allowVerdict];
@@ -142,16 +151,33 @@ extern Preferences* preferences;
     
     //log msg
     os_log_debug(logHandle, "flow: %{public}@", flow);
+    
+    //only once
+    // load init block list
+    // ...early it may fail for remote lists, as network isn't up
+    dispatch_once(&onceToken, ^{
+        
+        //dbg msg
+        os_log_debug(logHandle, "init'ing block list");
+        
+        //alloc/init/load block list
+        blockList = [[BlockList alloc] init];
+        
+    });
+    
 
     //extract remote endpoint
     remoteEndpoint = (NWHostEndpoint*)socketFlow.remoteEndpoint;
+    
+    //log msg
+    os_log_debug(logHandle, "remote endpoint: %{public}@ / url: %{public}@", remoteEndpoint, flow.URL);
     
     //ignore non-outbound traffic
     // even though we init'd `NETrafficDirectionOutbound`, sometimes get inbound traffic :|
     if(NETrafficDirectionOutbound != socketFlow.direction)
     {
         //log msg
-        os_log_debug(logHandle, "ignoring non-outbound traffic");
+        os_log_debug(logHandle, "ignoring non-outbound traffic (direction: %ld)", (long)socketFlow.direction);
            
         //bail
         goto bail;
@@ -181,7 +207,7 @@ bail:
     return verdict;
 }
 
-//process a network out event from the kernel
+//process a network out event from the network extension (OS)
 // if there is no matching rule, will tell client to show alert
 -(NEFilterNewFlowVerdict*)processEvent:(NEFilterFlow*)flow
 {
@@ -217,19 +243,6 @@ bail:
     //grab console user
     consoleUser = getConsoleUser();
     
-    //CHECK 0xx:
-    // different logged in user?
-    // just allow flow, as we don't want to block their traffic
-    if( (nil != consoleUser) &&
-        (YES != [alerts.consoleUser isEqualToString:consoleUser]) )
-    {
-        //dbg msg
-        os_log_debug(logHandle, "current console user '%{public}@', is different than '%{public}@', so allowing flow: %{public}@", consoleUser, alerts.consoleUser, ((NEFilterSocketFlow*)flow).remoteEndpoint);
-        
-        //all set
-        goto bail;
-    }
-        
     //check cache for process
     process = [self.cache objectForKey:flow.sourceAppAuditToken];
     if(nil == process)
@@ -243,7 +256,7 @@ bail:
     }
 
     //dbg msg
-    else os_log_debug(logHandle, "found process object in cache: %{public}@", process);
+    else os_log_debug(logHandle, "found process object in cache: %{public}@ (pid: %d)", process.path, process.pid);
     
     //sanity check
     // no process? just allow...
@@ -263,7 +276,58 @@ bail:
     //dbg msg
     //os_log_debug(logHandle, "process object for flow: %{public}@", process);
     
-    //CHECK 0x1:
+    //CHECK:
+    // different logged in user?
+    // just allow flow, as we don't want to block their traffic
+    if( (nil != consoleUser) &&
+        (YES != [alerts.consoleUser isEqualToString:consoleUser]) )
+    {
+        //dbg msg
+        os_log_debug(logHandle, "current console user '%{public}@', is different than '%{public}@', so allowing flow: %{public}@", consoleUser, alerts.consoleUser, ((NEFilterSocketFlow*)flow).remoteEndpoint);
+        
+        //all set
+        goto bail;
+    }
+    
+    //CHECK:
+    // client in (full) block mode? ...block!
+    if(YES == [preferences.preferences[PREF_BLOCK_MODE] boolValue])
+    {
+        //dbg msg
+        os_log_debug(logHandle, "client in block mode, so disallowing %d/%{public}@", process.pid, process.binary.name);
+        
+        //deny
+        verdict = [NEFilterNewFlowVerdict dropVerdict];
+        
+        //all set
+        goto bail;
+    }
+        
+    //CHECK:
+    // client using (global) block list
+    if( (YES == [preferences.preferences[PREF_USE_BLOCK_LIST] boolValue]) &&
+        (0 != [preferences.preferences[PREF_BLOCK_LIST] length]) )
+    {
+        //dbg msg
+        os_log_debug(logHandle, "client is using block list '%{public}@' (%lu items) ...will check for match", preferences.preferences[PREF_BLOCK_LIST], (unsigned long)blockList.items.count);
+        
+        //match in block list?
+        if(YES == [blockList isMatch:(NEFilterSocketFlow*)flow])
+        {
+            //dbg msg
+            os_log_debug(logHandle, "flow matches item in block list, so denying");
+            
+            //deny
+            verdict = [NEFilterNewFlowVerdict dropVerdict];
+            
+            //all set
+            goto bail;
+        }
+        //dbg msg
+        else os_log_debug(logHandle, "remote endpoint/URL not on block list...");
+    }
+        
+    //CHECK:
     // check for existing rule
     
     //existing rule for process?
@@ -271,7 +335,7 @@ bail:
     if(nil != matchingRule)
     {
         //dbg msg
-        os_log_debug(logHandle, "found matching rule for %{public}@ (pid: %d): %{public}@", process.binary.name, process.pid, matchingRule);
+        os_log_debug(logHandle, "found matching rule for %d/%{public}@: %{public}@", process.pid, process.binary.name, matchingRule);
         
         //deny?
         // otherwise will default to allow
@@ -293,16 +357,16 @@ bail:
     /* NO MATCHING RULE FOUND */
     
     //dbg msg
-    os_log_debug(logHandle, "no (saved) rule found for %{public}@ (pid: (%d))", process.binary.name, process.pid);
+    os_log_debug(logHandle, "no (saved) rule found for %d/%{public}@)", process.pid, process.binary.name);
     
     //no client?
 
-    //CHECK 0x2:
+    //CHECK:
     // client in passive mode? ...allow
     if(YES == [preferences.preferences[PREF_PASSIVE_MODE] boolValue])
     {
         //dbg msg
-        os_log_debug(logHandle, "client in passive mode, so allowing (%d)%{public}@", process.pid, process.binary.name);
+        os_log_debug(logHandle, "client in passive mode, so allowing %d/%{public}@", process.pid, process.binary.name);
         
         //all set
         goto bail;
@@ -311,13 +375,13 @@ bail:
     //dbg msg
     os_log_debug(logHandle, "client not in passive mode");
     
-    //CHECK 0x3:
+    //CHECK:
     // is a related alert shown, and pending reponse?
     // save, but don't send yet (until the user responds)
     if(YES == [alerts isRelated:process])
     {
         //dbg msg
-        os_log_debug(logHandle, "an alert is shown for process %{public}@, so holding off delivering for now...", process.binary.name);
+        os_log_debug(logHandle, "an alert is shown for process %d/%{public}@, so holding off delivering for now...", process.pid, process.binary.name);
         
         //add related flow
         [self addRelatedFlow:process flow:(NEFilterSocketFlow*)flow];
@@ -333,7 +397,7 @@ bail:
     os_log_debug(logHandle, "no related alert, currently shown...");
     
     
-    //CHECK 0xx:
+    //CHECK:
     // Apple process and 'PREF_ALLOW_APPLE' is set?
     // ...allow!
     
@@ -377,7 +441,7 @@ bail:
         else
         {
             //dbg msg
-            os_log_debug(logHandle, "while signed by apple, %{public}@ is gray listed, so will alert", process.binary.name);
+            os_log_debug(logHandle, "while signed by apple, %d/%{public}@ is gray listed, so will alert", process.pid, process.binary.name);
             
             //pause
             verdict = [NEFilterNewFlowVerdict pauseVerdict];
@@ -448,7 +512,7 @@ bail:
     }
     
     //no user?
-    // allow but create rule for user to review
+    // allow, but create rule for user to review
     if( (nil == consoleUser) ||
         (nil == alerts.xpcUserClient) )
     {
@@ -486,16 +550,14 @@ bail:
     verdict = [NEFilterNewFlowVerdict pauseVerdict];
     
 bail:
-        
-    ;
     
-    }//pool
+    ;} //pool
     
     return verdict;
 }
 
 //1. create and deliver alert
-//2. handle response (and process other shown alerts, etc)
+//2. handle response (and process other shown alerts, etc.)
 -(void)alert:(NEFilterSocketFlow*)flow process:(Process*)process
 {
     //alert
@@ -508,13 +570,15 @@ bail:
     os_log_debug(logHandle, "created alert...");
 
     //deliver alert
+    // and process user response
     if(YES != [alerts deliver:alert reply:^(NSDictionary* alert)
     {
         //verdict
         NEFilterNewFlowVerdict* verdict = nil;
         
-        //dbg msg
-        os_log_debug(logHandle, "(user) response: %{public}@", alert);
+        //log msg
+        // note, this msg persists in log
+        os_log(logHandle, "(user) response: \"%@\" for %{public}@, that was trying to connect to %{public}@:%{public}@", (RULE_STATE_BLOCK == [alert[KEY_ACTION] unsignedIntValue]) ? @"block" : @"allow", alert[KEY_PATH], alert[KEY_ENDPOINT_ADDR], alert[KEY_ENDPOINT_PORT]);
         
         //init verdict to allow
         verdict = [NEFilterNewFlowVerdict allowVerdict];

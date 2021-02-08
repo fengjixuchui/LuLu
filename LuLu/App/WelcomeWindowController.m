@@ -55,7 +55,7 @@ extern os_log_t logHandle;
     }
     
     //set title
-    self.window.title = [NSString stringWithFormat:@"LuLu (version: %@)", getAppVersion()];
+    self.window.title = [NSString stringWithFormat:@"LuLu v%@", getAppVersion()];
     
     //show welcome view
     [self showView:self.welcomeView firstResponder:SHOW_ALLOW_EXT];
@@ -78,7 +78,7 @@ extern os_log_t logHandle;
     if( (SHOW_CONFIGURE+1) == ((NSToolbarItem*)sender).tag)
     {
         //capture
-        self.preferences = @{PREF_ALLOW_APPLE:[NSNumber numberWithBool:self.allowApple.state], PREF_ALLOW_INSTALLED: [NSNumber numberWithBool:self.allowInstalled.state], PREF_PASSIVE_MODE:@NO, PREF_NO_ICON_MODE:@NO, PREF_NO_UPDATE_MODE:@NO, PREF_INSTALL_TIMESTAMP:[NSDate date]};
+        self.preferences = @{PREF_ALLOW_APPLE:[NSNumber numberWithBool:self.allowApple.state], PREF_ALLOW_INSTALLED: [NSNumber numberWithBool:self.allowInstalled.state], PREF_PASSIVE_MODE:@NO, PREF_BLOCK_MODE:@NO, PREF_NO_ICON_MODE:@NO, PREF_NO_UPDATE_MODE:@NO, PREF_INSTALL_TIMESTAMP:[NSDate date]};
     }
     
     //set next view
@@ -144,11 +144,15 @@ extern os_log_t logHandle;
                         //err msg
                         os_log_error(logHandle, "ERROR: failed to activate extension");
                         
-                        //show alert
-                        showAlert(@"ERROR: activation failed", @"failed to activate system/network extension");
-                        
-                        //bye
-                        [NSApplication.sharedApplication terminate:self];
+                        //show alert/exit on main thread
+                        dispatch_async(dispatch_get_main_queue(),
+                        ^{
+                            //show alert
+                            showAlert(@"ERROR: activation failed", @"failed to activate system/network extension");
+                            
+                            //bye
+                            [NSApplication.sharedApplication terminate:self];
+                        });
                     }
                     //happy
                     else
@@ -201,25 +205,29 @@ extern os_log_t logHandle;
             [self showView:self.configureView firstResponder:SHOW_SUPPORT];
             break;
             
-        //show configure view
+        //show "support us" view
+        // + kick off main logic so traffic filtering is started
         case SHOW_SUPPORT:
+            
+            //show support view
             [self showView:self.supportView firstResponder:SUPPORT_YES];
+            
+            //kick off main (client) logic
+            [((AppDelegate*)[[NSApplication sharedApplication] delegate]) completeInitialization:self.preferences];
+            
             break;
             
         //support, yes!
         case SUPPORT_YES:
             
-            //open URL
+            //open patreon URL
             // invokes user's default browser
             [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:PATREON_URL]];
         
-            //fall thru as we want to kick off main logic / close
+            //fall thru as we want to close/set app state
         
         //support, no :(
         case SUPPORT_NO:
-            
-            //kick off main client logic
-            [((AppDelegate*)[[NSApplication sharedApplication] delegate]) completeInitialization:self.preferences];
             
             //close window
             [self.window close];

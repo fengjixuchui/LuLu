@@ -20,9 +20,6 @@ extern os_log_t logHandle;
 //alert windows
 NSMutableDictionary* alerts = nil;
 
-//extension obj
-//Extension* extension = nil;
-
 @interface AppDelegate ()
 
 @property (weak) IBOutlet NSWindow *window;
@@ -195,7 +192,7 @@ NSMutableDictionary* alerts = nil;
                     //dbg msg
                     os_log_debug(logHandle, "extension now up and running");
                     
-                    //show error on main thread
+                    //complete initialization on main thread
                     dispatch_async(dispatch_get_main_queue(), ^{
                         
                         //complete inits
@@ -284,7 +281,7 @@ bail:
     if(YES != [extension isExtensionRunning])
     {
         //show alert
-        [self noExtensionAlert];
+        showAlert(@"LuLu's Network Extension Is Not Running", @"Extensions must be manually approved via Security & Privacy System Preferences.");
         
         //bail
         goto bail;
@@ -301,76 +298,6 @@ bail:
 bail:
     
     return NO;
-}
-
-//when extension is not running
-// show alert to user, to open sys prefs, or exit
--(void)noExtensionAlert
-{
-    //alert
-    NSAlert* alert = nil;
-    
-    //response
-    NSModalResponse response = 0;
-
-    //init alert
-    alert = [[NSAlert alloc] init];
-    
-    //set style
-    alert.alertStyle = NSAlertStyleWarning;
-    
-    //main text
-    alert.messageText = @"LuLu's Network Extension Is Not Running";
-    
-    //details
-    alert.informativeText = @"Extensions must be manually approved via System Preferences.";
-    
-    //add button
-    [alert addButtonWithTitle:@"Open System Prefs"];
-
-    //add button
-    [alert addButtonWithTitle:@"Exit LuLu"];
-
-    //foreground
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-
-    //make key and front
-    [self.window makeKeyAndOrderFront:self];
-
-    //make app active
-    [NSApp activateIgnoringOtherApps:YES];
-    
-    //dbg msg
-    os_log_debug(logHandle, "showing 'no extension running alert' to user...");
-
-    //show alert
-    // modal/blocks until response
-    response = [alert runModal];
-    
-    //dbg msg
-    os_log_debug(logHandle, "user responsed with %ld", (long)response);
-    
-    // response: open system prefs?
-    if(NSModalResponseOpen == response)
-    {
-        //dbg msg
-        os_log_debug(logHandle, "launching System Preferenes...");
-        
-        //launch system prefs and show 'privacy'
-        [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?General"]];
-    }
-    //ok
-    // user wants to quit
-    else
-    {
-        //dbg msg
-        os_log_debug(logHandle, "exiting ...bye!");
-        
-        //exit
-        [NSApplication.sharedApplication terminate:self];
-    }
-    
-    return;
 }
 
 //'rules' menu item handler
@@ -690,7 +617,7 @@ bail:
         {
             //error
             case -1:
-                os_log_error(logHandle, "update check failed");
+                os_log_error(logHandle, "ERROR: update check failed");
                 break;
                 
             //no updates
@@ -775,7 +702,7 @@ bail:
     if(NSModalResponseCancel == [alert runModal])
     {
          //dbg msg
-         os_log_debug(logHandle, "user canceled uninstall");
+         os_log_debug(logHandle, "user canceled quitting");
          
          //(re)background
          [self setActivationPolicy];
@@ -807,7 +734,7 @@ bail:
             [extension toggleExtension:ACTION_DEACTIVATE reply:^(BOOL toggled)
             {
                 //dbg msg
-                os_log_debug(logHandle, "extension 'deactivate' returned");
+                os_log_debug(logHandle, "extension 'deactivate' returned...");
                 
                 //signal semaphore
                 dispatch_semaphore_signal(semaphore);
@@ -827,9 +754,6 @@ bail:
                     
                     //dbg msg
                     os_log_debug(logHandle, "all done, goodbye!");
-                    
-                    //signal semaphore
-                    dispatch_semaphore_signal(semaphore);
                     
                     //bye
                     [NSApplication.sharedApplication terminate:self];
@@ -906,22 +830,15 @@ bail:
         //dbg msg
         os_log_debug(logHandle, "user confirmed uninstall");
 
-        //tell ext to uninstall
-        // remove rules, etc, etc
-        if(YES != [self.xpcDaemonClient uninstall])
-        {
-            //err msg
-            os_log_error(logHandle, "ERROR: daemon's XPC uninstall logic");
-            
-            //but continue onwards
-        }
-        
-        //deactive network extension
-        // this will also cause the extension to be unloaded
+        //tell extension to uninstall
+        // and then deactive network extension
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             
             //extension
             Extension* extension = nil;
+            
+            //flag
+            __block BOOL deactivated = NO;
             
             //wait semaphore
             dispatch_semaphore_t semaphore = 0;
@@ -938,29 +855,60 @@ bail:
             //init wait semaphore
             semaphore = dispatch_semaphore_create(0);
             
-            //kick off extension activation request
-            [extension toggleExtension:ACTION_DEACTIVATE reply:^(BOOL toggled)
+            //tell ext to uninstall
+            // remove rules, etc, etc
+            if(YES != [self.xpcDaemonClient uninstall])
             {
-                //dbg msg
-                os_log_debug(logHandle, "extension 'deactivate' returned (%d)", toggled);
+                //err msg
+                os_log_error(logHandle, "ERROR: daemon's XPC uninstall logic");
                 
-                //signal semaphore
-                dispatch_semaphore_signal(semaphore);
-            }];
+                //but continue onwards
+            }
             
-            //wait for extension semaphore
-            dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-            
-            //dbg msg
-            os_log_debug(logHandle, "extension event triggered");
+            //user has to remove
+            // otherwise we get into a funky state :/
+            while(YES)
+            {
+                //kick off extension activation request
+                [extension toggleExtension:ACTION_DEACTIVATE reply:^(BOOL toggled)
+                {
+                    //save
+                    deactivated = toggled;
+                    
+                    //toggled ok?
+                    if(YES == toggled)
+                    {
+                        //dbg msg
+                        os_log_debug(logHandle, "extension deactivated");
+                    }
+                    //failed?
+                    else
+                    {
+                        //err msg
+                        os_log_error(logHandle, "ERROR: failed to deactivate extension, will reattempt");
+                    }
+                    
+                    //signal semaphore
+                    dispatch_semaphore_signal(semaphore);
+                }];
+                
+                //wait for extension semaphore
+                dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+                
+                //dbg msg
+                os_log_debug(logHandle, "extension event triggered");
+                
+                //deactivated?
+                if(YES == deactivated) break;
+            }
             
             //remove login item
             if(YES != toggleLoginItem(NSBundle.mainBundle.bundleURL, ACTION_UNINSTALL_FLAG))
             {
                 //err msg
-                os_log_error(logHandle, "ERROR: failed to uninstall login item (self)");
+                os_log_error(logHandle, "ERROR: failed to uninstall login item");
                 
-            } else os_log_debug(logHandle, "uninstalled login item (self)");
+            } else os_log_debug(logHandle, "uninstalled login item");
             
             //init app path
             path = NSBundle.mainBundle.bundlePath;

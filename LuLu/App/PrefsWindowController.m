@@ -34,24 +34,24 @@ extern os_log_t logHandle;
 #define BUTTON_ALLOW_INSTALLED 2
 
 //'allow globally' button
-#define BUTTON_ALLOW_GLOBALLY 3
+#define BUTTON_USE_BLOCK_LIST 3
 
 //'passive mode' button
 #define BUTTON_PASSIVE_MODE 4
 
+//'block mode' button
+#define BUTTON_BLOCK_MODE 5
+
 //'no-icon mode' button
-#define BUTTON_NO_ICON_MODE 5
+#define BUTTON_NO_ICON_MODE 6
 
 //'update mode' button
-#define BUTTON_NO_UPDATE_MODE 6
+#define BUTTON_NO_UPDATE_MODE 7
 
 //init 'general' view
 // add it, and make it selected
 -(void)awakeFromNib
 {
-    //set title
-    self.window.title = [NSString stringWithFormat:@"LuLu (v. %@)", getAppVersion()];
-    
     //get prefs
     self.preferences = [((AppDelegate*)[[NSApplication sharedApplication] delegate]).xpcDaemonClient getPreferences];
     
@@ -94,6 +94,22 @@ extern os_log_t logHandle;
             //set 'installed allowed' button state
             ((NSButton*)[view viewWithTag:BUTTON_ALLOW_INSTALLED]).state = [self.preferences[PREF_ALLOW_INSTALLED] boolValue];
             
+            //set 'block list' button state
+            ((NSButton*)[view viewWithTag:BUTTON_USE_BLOCK_LIST]).state = [self.preferences[PREF_USE_BLOCK_LIST] boolValue];
+            
+            //is there a block list? ...set!
+            if(0 != [self.preferences[PREF_BLOCK_LIST] length])
+            {
+                //set
+                self.blockList.stringValue = self.preferences[PREF_BLOCK_LIST];
+            }
+            
+            //set 'browse' button state
+            self.selectBlockListButton.enabled = [self.preferences[PREF_USE_BLOCK_LIST] boolValue];
+            
+            //set block list input state
+            self.blockList.enabled = [self.preferences[PREF_USE_BLOCK_LIST] boolValue];
+            
             break;
             
         //modes
@@ -104,6 +120,9 @@ extern os_log_t logHandle;
             
             //set 'passive mode' button state
             ((NSButton*)[view viewWithTag:BUTTON_PASSIVE_MODE]).state = [self.preferences[PREF_PASSIVE_MODE] boolValue];
+            
+            //set 'block mode' button
+            ((NSButton*)[view viewWithTag:BUTTON_BLOCK_MODE]).state = [self.preferences[PREF_BLOCK_MODE] boolValue];
             
             //set 'no icon' button state
             ((NSButton*)[view viewWithTag:BUTTON_NO_ICON_MODE]).state = [self.preferences[PREF_NO_ICON_MODE] boolValue];
@@ -167,9 +186,35 @@ bail:
             updatedPreferences[PREF_ALLOW_INSTALLED] = state;
             break;
             
+        //use block list
+        case BUTTON_USE_BLOCK_LIST:
+            updatedPreferences[PREF_USE_BLOCK_LIST] = state;
+            
+            //set 'browse' button state
+            self.selectBlockListButton.enabled = (NSControlStateValueOn == state.longValue);
+            
+            //set block list input state
+            self.blockList.enabled = (NSControlStateValueOn == state.longValue);
+            
+            break;
+            
         //passive mode
         case BUTTON_PASSIVE_MODE:
             updatedPreferences[PREF_PASSIVE_MODE] = state;
+            break;
+            
+        //block mode
+        case BUTTON_BLOCK_MODE:
+            
+            //enable?
+            // show alert
+            if(NSControlStateValueOn == state.longValue)
+            {
+                //show alert
+                showAlert(@"Outgoing traffic will now be blocked.", @"Note however:\r\n▪ Existing connections will not be impacted.\r\n▪ OS traffic (not routed thru LuLu) will not be blocked.");
+            }
+                
+            updatedPreferences[PREF_BLOCK_MODE] = state;
             break;
             
         //no icon mode
@@ -193,6 +238,56 @@ bail:
     //call back into app to process
     // e.g. show/hide status bar icon, etc.
     [((AppDelegate*)[[NSApplication sharedApplication] delegate]) preferencesChanged:self.preferences];
+    
+    return;
+}
+
+//browse for select list
+-(IBAction)selectBlockList:(id)sender
+{
+    //'browse' panel
+    NSOpenPanel *panel = nil;
+        
+    //init panel
+    panel = [NSOpenPanel openPanel];
+        
+    //allow files
+    panel.canChooseFiles = YES;
+    
+    //start ...at desktop
+    panel.directoryURL = [NSURL fileURLWithPath:[NSSearchPathForDirectoriesInDomains (NSDesktopDirectory, NSUserDomainMask, YES) firstObject]];
+        
+    //disable multiple selections
+    panel.allowsMultipleSelection = NO;
+        
+    //show it
+    // and wait for response
+    if(NSModalResponseOK == [panel runModal])
+    {
+        //update ui
+        self.blockList.stringValue = panel.URL.path;
+        
+        //dbg msg
+        os_log_debug(logHandle, "user selected block list: %{public}@", self.blockList.stringValue);
+        
+        //send XPC msg to daemon to update prefs
+        // returns (all/latest) prefs, which is what we want
+        self.preferences = [((AppDelegate*)[[NSApplication sharedApplication] delegate]).xpcDaemonClient updatePreferences:@{PREF_BLOCK_LIST:panel.URL.path}];
+    }
+    
+    return;
+}
+
+
+//invoked when block list path is (manually entered)
+-(IBAction)updateBlockList:(id)sender
+{
+    //dbg msg
+    os_log_debug(logHandle, "got 'update block list event' (value: %{public}@)", self.blockList.stringValue);
+    
+    //send XPC msg to daemon to update prefs
+    // returns (all/latest) prefs, which is what we want
+    self.preferences = [((AppDelegate*)[[NSApplication sharedApplication] delegate]).xpcDaemonClient updatePreferences:@{PREF_BLOCK_LIST:self.blockList.stringValue}];
     
     return;
 }
@@ -301,13 +396,50 @@ bail:
     return;
 }
 
+//button handler
+// open LuLu home page/docs
+-(IBAction)openHomePage:(id)sender {
+    
+    //open
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:PRODUCT_URL]];
+    
+    return;
+}
+
 //on window close
-// set activation policy
+// update prefs/set activation policy
 -(void)windowWillClose:(NSNotification *)notification
 {
-     //wait a bit, then set activation policy
-     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-     ^{
+    //blank block list?
+    // uncheck 'enabled' and update prefs
+    if(0 == self.blockList.stringValue.length)
+    {
+        //uncheck 'blocklist' radio button
+        ((NSButton*)[self.rulesView viewWithTag:BUTTON_USE_BLOCK_LIST]).state = NSControlStateValueOff;
+        
+        //disable 'browse' button
+        self.selectBlockListButton.enabled = NSControlStateValueOff;
+        
+        //disable block list input
+        self.blockList.enabled = NSControlStateValueOff;
+        
+        //send XPC msg to daemon to update prefs
+        // returns (all/latest) prefs, which is what we want
+        self.preferences = [((AppDelegate*)[[NSApplication sharedApplication] delegate]).xpcDaemonClient updatePreferences:@{PREF_USE_BLOCK_LIST:@0}];
+    }
+        
+    //block list changed? capture!
+    // this logic is needed, as window can be closed when text field still has focus and 'end edit' won't have fired
+    if(YES != [self.preferences[PREF_BLOCK_LIST] isEqualToString:self.blockList.stringValue])
+    {
+        //send XPC msg to daemon to update prefs
+        // returns (all/latest) prefs, which is what we want
+        self.preferences = [((AppDelegate*)[[NSApplication sharedApplication] delegate]).xpcDaemonClient updatePreferences:@{PREF_BLOCK_LIST:self.blockList.stringValue}];
+    }
+     
+    //wait a bit, then set activation policy
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+    ^{
          //on main thread
          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
              
@@ -315,9 +447,8 @@ bail:
              [((AppDelegate*)[[NSApplication sharedApplication] delegate]) setActivationPolicy];
              
          });
-     });
+    });
     
     return;
 }
-
 @end
