@@ -91,6 +91,9 @@ extern BlockList* blockList;
     //apply rules
     [self applySettings:filterSettings completionHandler:^(NSError * _Nullable error) {
         
+        //log msg
+        os_log_debug(logHandle, "'applySettings' completed");
+        
         //error?
         if(nil != error) os_log_error(logHandle, "ERROR: failed to apply filter settings: %@", error.localizedDescription);
         
@@ -146,6 +149,18 @@ extern BlockList* blockList;
     //init verdict to allow
     verdict = [NEFilterNewFlowVerdict allowVerdict];
     
+    //no prefs (yet) or disabled
+    // just allow the flow (don't block)
+    if( (0 == preferences.preferences.count) ||
+        (YES == [preferences.preferences[PREF_IS_DISABLED] boolValue]) )
+    {
+        //dbg msg
+        os_log_debug(logHandle, "no prefs (yet) || disabled, so allowing flow");
+        
+        //bail
+        goto bail;
+    }
+    
     //typecast
     socketFlow = (NEFilterSocketFlow*)flow;
     
@@ -164,7 +179,6 @@ extern BlockList* blockList;
         blockList = [[BlockList alloc] init];
         
     });
-    
 
     //extract remote endpoint
     remoteEndpoint = (NWHostEndpoint*)socketFlow.remoteEndpoint;
@@ -216,8 +230,8 @@ bail:
     NEFilterNewFlowVerdict* verdict = nil;
     
     //pool
-    @autoreleasepool
-    {
+    //@autoreleasepool
+    //{
     
     //process obj
     Process* process = nil;
@@ -423,7 +437,7 @@ bail:
             //add process cs info
             if(nil != process.csInfo) info[KEY_CS_INFO] = process.csInfo;
             
-            //add
+            //add/save
             if(YES != [rules add:[[Rule alloc] init:info] save:YES])
             {
                 //err msg
@@ -551,7 +565,7 @@ bail:
     
 bail:
     
-    ;} //pool
+    //;} //pool
     
     return verdict;
 }
